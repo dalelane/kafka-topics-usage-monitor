@@ -1,0 +1,133 @@
+#
+# Sample YAML for creating a tiny single-broker Kafka cluster in OpenShift
+#  using the Strimzi Kubernetes Operator, and enabling collection of metrics
+#  used by the Topics Usage Monitor.
+#
+---
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: kafka-metrics
+  namespace: quicktest
+data:
+  kafka-metrics-config.yaml: |
+    lowercaseOutputName: true
+    rules:
+      - pattern: 'kafka.server<type=BrokerTopicMetrics, name=(BytesInPerSec), topic=(.+)><>Count'
+        name: kafka_server_brokertopicmetrics_bytesin_total
+        type: COUNTER
+        labels:
+          topic: "$2"
+      - pattern: 'kafka.server<type=BrokerTopicMetrics, name=(BytesOutPerSec), topic=(.+)><>Count'
+        name: kafka_server_brokertopicmetrics_bytesout_total
+        type: COUNTER
+        labels:
+          topic: "$2"
+---
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaNodePool
+metadata:
+  name: my-pool
+  namespace: quicktest
+  labels:
+    strimzi.io/cluster: demo-cluster
+spec:
+  replicas: 1
+  roles:
+    - broker
+    - controller
+  storage:
+    type: ephemeral
+---
+apiVersion: kafka.strimzi.io/v1beta2
+kind: Kafka
+metadata:
+  name: demo-cluster
+  namespace: quicktest
+  annotations:
+    strimzi.io/kraft: enabled
+    strimzi.io/node-pools: enabled
+spec:
+  entityOperator:
+    topicOperator: {}
+    userOperator: {}
+  kafka:
+    config:
+      default.replication.factor: 1
+      min.insync.replicas: 1
+      offsets.topic.replication.factor: 1
+      transaction.state.log.min.isr: 1
+      transaction.state.log.replication.factor: 1
+    listeners:
+      - name: plain
+        port: 9092
+        tls: false
+        type: internal
+    metricsConfig:
+      type: jmxPrometheusExporter
+      valueFrom:
+        configMapKeyRef:
+          key: kafka-metrics-config.yaml
+          name: kafka-metrics
+    version: 4.0.0
+---
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: kafka-resources-metrics
+  namespace: quicktest
+spec:
+  selector:
+    matchExpressions:
+      - key: "strimzi.io/kind"
+        operator: In
+        values: ["Kafka"]
+  namespaceSelector:
+    matchNames:
+      - quicktest
+  podMetricsEndpoints:
+  - path: /metrics
+    port: tcp-prometheus
+    relabelings:
+    - separator: ;
+      regex: __meta_kubernetes_pod_label_(strimzi_io_.+)
+      replacement: $1
+      action: labelmap
+    - sourceLabels: [__meta_kubernetes_namespace]
+      separator: ;
+      regex: (.*)
+      targetLabel: namespace
+      replacement: $1
+      action: replace
+    - sourceLabels: [__meta_kubernetes_pod_name]
+      separator: ;
+      regex: (.*)
+      targetLabel: kubernetes_pod_name
+      replacement: $1
+      action: replace
+    - sourceLabels: [__meta_kubernetes_pod_node_name]
+      separator: ;
+      regex: (.*)
+      targetLabel: node_name
+      replacement: $1
+      action: replace
+    - sourceLabels: [__meta_kubernetes_pod_host_ip]
+      separator: ;
+      regex: (.*)
+      targetLabel: node_ip
+      replacement: $1
+      action: replace
+---
+apiVersion: kafka.strimzi.io/v1beta2
+kind: KafkaTopic
+metadata:
+  name: mytopic
+  namespace: quicktest
+  labels:
+    strimzi.io/cluster: demo-cluster
+spec:
+  config:
+    retention.ms: 604800000
+    segment.bytes: 1073741824
+  partitions: 1
+  replicas: 1

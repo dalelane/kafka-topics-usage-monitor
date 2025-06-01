@@ -1,0 +1,120 @@
+#
+# Sample YAML for deploying the Topics Usage Monitor to keep track of
+#  the last time that consumer or producer traffic have been observed
+#  for each topic in an IBM Event Streams Kafka cluster
+#
+# This is an example of how to run the Monitor in a namespace
+#  called "event-automation" in a Red Hat OpenShift Container Platform cluster.
+#  Running it in a different namespace or K8s distribution will
+#  require some minor changes.
+#
+
+---
+# This role defines the Kubernetes permissions required by the
+#  Topics Usage Monitor.
+kind: Role
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: topics-usage-monitor-role
+  namespace: event-automation
+rules:
+  - verbs:
+      # get a list of KafkaTopics
+      - list
+      # get the current annotations from each KafkaTopic
+      - get
+      # add new annotations to KafkaTopic
+      - patch
+    apiGroups:
+      - eventstreams.ibm.com
+    resources:
+      - kafkatopics
+---
+# Defines the account that the Topics Usage Monitor will run as
+kind: ServiceAccount
+apiVersion: v1
+metadata:
+  name: topics-usage-monitor-sa
+  namespace: event-automation
+---
+# Connects the account that runs the Topics Usage Monitor pod
+#  with the permissions that are defined for it
+kind: RoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: topics-usage-monitor-rb
+  namespace: event-automation
+subjects:
+  - kind: ServiceAccount
+    name: topics-usage-monitor-sa
+    namespace: event-automation
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: topics-usage-monitor-role
+---
+# Grants the Topics Usage Monitor access to Prometheus metrics data
+kind: ClusterRoleBinding
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+  name: topics-usage-monitor-es-cluster-monitoring-view
+subjects:
+  - kind: ServiceAccount
+    name: topics-usage-monitor-sa
+    namespace: event-automation
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: cluster-monitoring-view
+---
+# Deploys the Topics Usage Monitor pod
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: topics-usage-monitor
+  namespace: event-automation
+  labels:
+    app: topics-usage-monitor
+spec:
+  selector:
+    matchLabels:
+      app: topics-usage-monitor
+  template:
+    metadata:
+      labels:
+        app: topics-usage-monitor
+    spec:
+      serviceAccountName: topics-usage-monitor-sa
+      containers:
+      - name: monitor
+        imagePullPolicy: Always
+        image: image-registry.openshift-image-registry.svc:5000/event-automation/topics-usage-monitor:0.0.1
+        env:
+          - name: NAMESPACE
+            value: event-automation
+          - name: CLUSTER
+            value: my-kafka-cluster
+          - name: MODE
+            value: eventstreams
+          - name: BYTES_IN_METRIC
+            value: kafka_server_brokertopicmetrics_bytesin_total
+          - name: BYTES_OUT_METRIC
+            value: kafka_server_brokertopicmetrics_bytesout_total
+          - name: PROMETHEUS_URL
+            value: https://thanos-querier.openshift-monitoring.svc:9091
+          - name: POLL_INTERVAL_SECONDS
+            value: '180'
+          - name: LOG_LEVEL
+            value: info
+        volumeMounts:
+          - name: openshift-service-ca
+            readOnly: true
+            mountPath: /opt/app/creds/prometheus-ca.crt
+            subPath: prometheus-ca.crt
+      volumes:
+        - name: openshift-service-ca
+          configMap:
+            name: openshift-service-ca.crt
+            items:
+              - key: service-ca.crt
+                path: prometheus-ca.crt
